@@ -1,0 +1,248 @@
+const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+const express = require('express');
+const fs = require('fs').promises;
+const path = require('path');
+const fse = require('fs-extra');
+const fetch = require('node-fetch');
+const { OpenAI } = require('openai');
+require('dotenv').config();
+
+const SHARED_MEMORY_FILE = path.join(__dirname, 'bot_data', 'shared_memory.json');
+const SHAKE_BOT_DIR = path.join(__dirname, 'shake_bot_data');
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+  ],
+});
+
+const app = express();
+app.use(express.json());
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+async function ensureDirectory(dir) {
+  try {
+    await fse.ensureDir(dir);
+  } catch (error) {
+    console.error('Directory error:', error);
+  }
+}
+
+async function writeToSharedMemory(data) {
+  await ensureDirectory(path.dirname(SHARED_MEMORY_FILE));
+  try {
+    await fse.writeJSON(SHARED_MEMORY_FILE, data, { spaces: 2 });
+  } catch (error) {
+    console.error('Write error:', error);
+  }
+}
+
+async function readFromSharedMemory() {
+  try {
+    return await fse.readJSON(SHARED_MEMORY_FILE);
+  } catch (error) {
+    return {
+      activated: false,
+      overlayData: { status: 'Inactive', timestamp: null },
+      messageHistory: [],
+      learnedData: {},
+      upgrades: [],
+    };
+  }
+}
+
+async function fetchSharedMemory() {
+  try {
+    const response = await fetch('http://your-render-url.com/shared-memory'); // Replace with Render URL
+    return await response.json();
+  } catch (error) {
+    console.error('Fetch error:', error);
+    return await readFromSharedMemory();
+  }
+}
+
+async function synthesizeSpeech(text) {
+  const response = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice: 'alloy',
+    input: text,
+  });
+  return Buffer.from(await response.arrayBuffer());
+}
+
+function loadShakeBotFunctions() {
+  const shakeFunctions = {};
+  const files = fse.readdirSync(SHAKE_BOT_DIR).filter(f => f.endsWith('.js'));
+  files.forEach(file => {
+    const module = require(path.join(SHAKE_BOT_DIR, file));
+    Object.assign(shakeFunctions, module);
+  });
+  return shakeFunctions;
+}
+
+const shakeBotFunctions = loadShakeBotFunctions();
+
+client.once('ready', () => {
+  console.log(`Logged in as ${client.user.tag} - Awaiting 'Cad' at ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })}`);
+});
+
+class RuneScapeAI {
+  constructor() {
+    this.memory = [];
+    this.supportedActivities = [];
+    this.learnedActivities = [];
+    this.learnedItems = [];
+    this.visualNotes = {};
+  }
+
+  remember(interaction) {
+    this.memory.push(interaction);
+    if (this.memory.length > 100) this.memory.shift();
+  }
+
+  async runShakeBot(functionName, args = []) {
+    const func = shakeBotFunctions[functionName];
+    if (func) {
+      const result = func(...args);
+      return result;
+    }
+    return 'No function available.';
+  }
+
+  async playAudioResponse(channel, text) {
+    if (!channel) return;
+    const connection = joinVoiceChannel({
+      channelId: channel.id,
+      guildId: channel.guild.id,
+      adapterCreator: channel.guild.voiceAdapterCreator,
+    });
+    try {
+      const audioData = await synthesizeSpeech(text);
+      const resource = createAudioResource(audioData, { inlineVolume: true });
+      const player = createAudioPlayer();
+      player.play(resource);
+      connection.subscribe(player);
+      player.on(AudioPlayerStatus.Idle, () => connection.destroy());
+    } catch (error) {
+      console.error('Audio error:', error);
+      connection.destroy();
+    }
+  }
+}
+
+const ai = new RuneScapeAI();
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  const content = message.content.toLowerCase();
+  const guild = message.guild;
+
+  if (!guild || !guild.members.cache.has(client.user.id)) return;
+
+  let memory = await readFromSharedMemory();
+  if (content.includes('cad') && !memory.activated) {
+    memory.activated = true;
+    memory.overlayData = { status: `Activated at ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })}`, timestamp: Date.now() };
+    try {
+      const messages = await message.channel.messages.fetch({ limit: 100 });
+      memory.messageHistory = messages.map(msg => ({ author: msg.author.tag, content: msg.content }));
+    } catch (error) {
+      console.error('History error:', error);
+    }
+    await writeToSharedMemory(memory);
+    await message.reply('Activated! Speak or type to interact.');
+    await ai.playAudioResponse(message.member.voice.channel, 'Bot activated. Use commands to interact.');
+  } else if (content.includes('cad sleep') && memory.activated) {
+    memory.activated = false;
+    memory.overlayData = { status: 'Inactive', timestamp: Date.now() };
+    await writeToSharedMemory(memory);
+    await message.reply('Sleeping. Say "Cad" to wake.');
+    await ai.playAudioResponse(message.member.voice.channel, 'Going to sleep. Wake me with Cad.');
+  } else if (memory.activated) {
+    memory.messageHistory.unshift({ author: message.author.tag, content: message.content });
+    if (memory.messageHistory.length > 100) memory.messageHistory.pop();
+    await writeToSharedMemory(memory);
+
+    if (message.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
+      if (content.includes('admin ban')) {
+        const user = message.mentions.users.first();
+        if (user) {
+          await guild.members.ban(user);
+          await message.reply(`Banned ${user.tag}`);
+          await ai.playAudioResponse(message.member.voice.channel, `Banned ${user.tag}`);
+        }
+      } else if (content.includes('admin kick')) {
+        const user = message.mentions.users.first();
+        if (user) {
+          await guild.members.kick(user);
+          await message.reply(`Kicked ${user.tag}`);
+          await ai.playAudioResponse(message.member.voice.channel, `Kicked ${user.tag}`);
+        }
+      }
+    }
+
+    if (content.startsWith('!run shake')) {
+      const [functionName, ...args] = content.replace('!run shake ', '').split(' ');
+      const result = await ai.runShakeBot(functionName, args);
+      await message.reply(result);
+      await ai.playAudioResponse(message.member.voice.channel, result);
+    }
+  }
+});
+
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  if (!oldState.channel && newState.channel && newState.member.user.id === client.user.id) {
+    const memory = await readFromSharedMemory();
+    if (memory.activated) {
+      const connection = joinVoiceChannel({
+        channelId: newState.channel.id,
+        guildId: newState.guild.id,
+        adapterCreator: newState.guild.voiceAdapterCreator,
+      });
+      connection.on('speaking', async (user, speaking) => {
+        if (user === newState.member.user && speaking.bitfield) {
+          const audioStream = connection.receiver.subscribe(user);
+          const chunks = [];
+          audioStream.on('data', chunk => chunks.push(chunk));
+          audioStream.on('end', async () => {
+            const audioBuffer = Buffer.concat(chunks);
+            const transcription = await openai.audio.transcriptions.create({
+              file: audioBuffer,
+              model: 'whisper-1',
+            });
+            const response = await openai.chat.completions.create({
+              model: 'gpt-4o',
+              messages: [{ role: 'user', content: transcription.text }],
+            });
+            await newState.channel.send(response.choices[0].message.content);
+            await ai.playAudioResponse(newState.channel, response.choices[0].message.content);
+          });
+        }
+      });
+    }
+  }
+});
+
+app.get('/fetch-price', (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.status(400).json({ error: 'Query required' });
+  res.json({ result: `Price for ${query} is 1000 gp (mocked)` });
+});
+
+app.get('/shared-memory', async (req, res) => {
+  const memory = await readFromSharedMemory();
+  res.json(memory);
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`API on ${port} at ${new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' })}`));
+
+client.login(process.env.BOT_TOKEN);
