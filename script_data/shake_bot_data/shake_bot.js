@@ -634,3 +634,10 @@ module.exports = { readGETransaction, priceCheck };
 </body>
 
 </html>
+module.exports = {
+  prices: {
+    "torstol": "5,200 GP", // Approx from recent trends
+    "kwuarm": "1,136 GP",  // From Flipaholics
+    "avantoe": "4,233 GP"   // From web data
+  }
+};

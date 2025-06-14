@@ -18,7 +18,20 @@ function trackAbility(abilityName) { return `Monitor the cooldown of "${abilityN
 module.exports = { trackAbility };
 
 
-
+module.exports = {
+  xp: {
+    "attack": "500000",
+    "strength": "600000",
+    "defence": "450000",
+    "hitpoints": "700000",
+    "ranged": "300000",
+    "magic": "400000"
+  },
+  updateXP: function(skill, value) {
+    this.xp[skill.toLowerCase()] = value;
+    return this.xp[skill.toLowerCase()];
+  }
+};
 
 
 
