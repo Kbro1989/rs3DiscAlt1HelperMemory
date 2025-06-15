@@ -4,7 +4,7 @@ const fetch = require('node-fetch');
 const { Configuration, OpenAIApi } = require('openai');
 
 const configuration = new Configuration({
-  apiKey: process.env.OPENAI_API_KEY || process.env.ADMIN_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const openai = new OpenAIApi(configuration);
 
@@ -21,28 +21,17 @@ client.on('messageCreate', async (message) => {
       const data = await response.json();
       message.reply(`Test price for ${item}: $${data.id * 10}`);
     } catch (error) {
-      message.reply('Fetch failed; using AI.');
-      try {
-        const prompt = `What is the price of ${item} in RuneScape?`;
-        const aiResponse = await openai.createCompletion({
-          model: 'text-davinci-003',
-          prompt: prompt,
-          max_tokens: 50,
-        });
-        message.reply(aiResponse.data.choices[0].text.trim());
-      } catch (error) {
-        message.reply('AI lookup failed.');
-      }
+      message.reply('Test error; AI disabled in test mode.');
     }
   }
 
   if (content.includes('hello') || content.includes('hi')) {
-    message.reply("Welcome to rs3discordalt1bot! Ask 'how much is [item]'!");
+    message.reply("Test mode active! Welcome to rs3DiscAlt1Helper!");
   }
 });
 
 client.on('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
+  console.log(`Test mode logged in as ${client.user.tag}`);
 });
 
 client.login(process.env.BOT_TOKEN);
